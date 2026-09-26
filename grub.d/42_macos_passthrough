@@ -1,0 +1,43 @@
+#!/bin/sh
+# Installed to /etc/grub.d/ by install-passthrough-boot.sh (placeholders filled in there).
+# grub-mkconfig runs this on every regeneration, including kernel updates, so the
+# entry always uses the newest kernel and keeps its vfio args. A BLS entry's
+# options line gets overwritten on kernel updates instead.
+set -e
+
+. "${pkgdatadir:-/usr/share/grub}/grub-mkconfig_lib"
+
+TITLE="Linux - macOS GPU Passthrough"
+VFIO_IDS="@VFIO_IDS@"
+KERNEL_MATCH="@KERNEL_MATCH@"
+VFIO_ARGS="amd_iommu=on iommu=pt vfio_pci.ids=$VFIO_IDS rd.driver.pre=vfio_pci initcall_blacklist=sysfb_init video=efifb:off video=vesafb:off"
+
+KVER=$(ls /boot | sed -n 's/^vmlinuz-//p' | grep -v rescue | grep -E "${KERNEL_MATCH:-.}" | sort -V | tail -n 1)
+INITRD=""
+for f in "initramfs-$KVER.img" "initrd.img-$KVER" "initrd-$KVER.img"; do
+    [ -f "/boot/$f" ] && INITRD="$f" && break
+done
+if [ -z "$KVER" ] || [ -z "$INITRD" ]; then
+    echo "42_macos_passthrough: no usable kernel/initramfs in /boot, skipping" >&2
+    exit 0
+fi
+
+BASE=$(cat /etc/kernel/cmdline 2>/dev/null || true)
+[ -n "$BASE" ] || BASE="root=UUID=${GRUB_DEVICE_UUID} ro ${GRUB_CMDLINE_LINUX} ${GRUB_CMDLINE_LINUX_DEFAULT}"
+# amdgpu options are irrelevant (and unwanted) while vfio-pci owns the card
+ARGS=$(printf '%s\n' $BASE | grep -v -e '^amdgpu\.' | tr '\n' ' ')
+ARGS="${ARGS}${VFIO_ARGS}"
+
+BOOT_DEV=$("${grub_probe}" --target=device /boot)
+KPATH=$(make_system_path_relative_to_its_root "/boot/vmlinuz-$KVER")
+IPATH=$(make_system_path_relative_to_its_root "/boot/$INITRD")
+
+echo "Adding macOS GPU passthrough entry: $KVER" >&2
+
+echo "menuentry '$TITLE' --class gnu-linux --class os --unrestricted --id macos-gpu-passthrough {"
+echo "	insmod gzio"
+prepare_grub_to_access_device "$BOOT_DEV" | sed 's/^/	/'
+echo "	echo 'Loading $KVER (macOS GPU passthrough)...'"
+echo "	linux $KPATH $ARGS"
+echo "	initrd $IPATH"
+echo "}"

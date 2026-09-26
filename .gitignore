@@ -1,0 +1,11 @@
+# Never publish disk images, OpenCore images (contain SMBIOS serials), ROM dumps or logs
+*.qcow2
+*.img
+*.img.bak
+*.dmg
+*.iso
+*.rom
+*.fd
+logs/
+*.bak
+*.new
