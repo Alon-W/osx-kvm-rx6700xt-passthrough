@@ -191,6 +191,7 @@ MAC_SUFFIX=$(md5sum /etc/machine-id | sed -E 's/^(..)(..)(..).*/\1:\2:\3/')
 [ -n "${VM_MAC:-}" ] || VM_MAC="52:54:00:$MAC_SUFFIX"
 
 args=(
+  -name macOS,debug-threads=on
   -enable-kvm
   -m "$VM_RAM_MB"
   -machine q35
@@ -228,18 +229,34 @@ if [ -n "${VM_PIN_CPUS:-}" ]; then
     log "CPU pinning: vCPUs -> host CPUs ${PIN[*]}; QEMU threads -> ${HOST_CPUS:-any}"
 fi
 pin_vcpus() {
-    local tries t comm n pinned=0
+    # Needs -name debug-threads=on, which names vCPU threads "CPU <n>/KVM".
+    # Only restrict anything once every vCPU thread is found; otherwise leave
+    # QEMU unpinned rather than risk squeezing the vCPUs onto the host cores.
+    local tries t comm n
+    declare -A vcpu=()
     for tries in $(seq 50); do
+        vcpu=()
         for t in /proc/"$QPID"/task/*; do
             comm=$(cat "$t/comm" 2>/dev/null) || continue
-            [[ "$comm" =~ ^CPU\ ([0-9]+)/KVM$ ]] || continue
-            n=${BASH_REMATCH[1]}
-            taskset -pc "${PIN[$n]}" "$(basename "$t")" >/dev/null && pinned=$((pinned + 1))
+            [[ "$comm" =~ ^CPU\ ([0-9]+)/KVM$ ]] && vcpu[${BASH_REMATCH[1]}]=$(basename "$t")
         done
-        [ "$pinned" -ge "$VM_CORES" ] && { log "Pinned $pinned vCPU threads."; return; }
-        pinned=0; sleep 0.2
+        [ "${#vcpu[@]}" -ge "$VM_CORES" ] && break
+        sleep 0.2
     done
-    log "WARNING: could only pin $pinned of $VM_CORES vCPU threads"
+    if [ "${#vcpu[@]}" -lt "$VM_CORES" ]; then
+        log "WARNING: found ${#vcpu[@]} of $VM_CORES vCPU threads; running without pinning"
+        return
+    fi
+    for t in /proc/"$QPID"/task/*; do
+        n=""
+        for i in "${!vcpu[@]}"; do [ "${vcpu[$i]}" = "$(basename "$t")" ] && n=$i; done
+        if [ -n "$n" ]; then
+            taskset -pc "${PIN[$n]}" "$(basename "$t")" >/dev/null
+        elif [ -n "${HOST_CPUS:-}" ]; then
+            taskset -pc "$HOST_CPUS" "$(basename "$t")" >/dev/null
+        fi
+    done
+    log "Pinned ${#vcpu[@]} vCPU threads to ${PIN[*]}; other QEMU threads to ${HOST_CPUS:-any CPU}."
 }
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -263,11 +280,7 @@ log "Starting macOS on the physical monitors. Shut macOS down from inside to exi
 log "SSH into macOS: ssh <mac-user>@localhost -p 2222"
 log "QEMU monitor: socat - UNIX-CONNECT:$SCRIPT_DIR/logs/monitor.sock"
 QEMU_STARTED=1
-if [ -n "${HOST_CPUS:-}" ]; then
-    taskset -c "$HOST_CPUS" qemu-system-x86_64 "${args[@]}" &
-else
-    qemu-system-x86_64 "${args[@]}" &
-fi
+qemu-system-x86_64 "${args[@]}" &
 QPID=$!
 # QEMU runs in the background: stop it first on Ctrl+C / service stop, then clean up
 trap 'kill -TERM "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null; exit 130' INT TERM
