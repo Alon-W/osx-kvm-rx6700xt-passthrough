@@ -104,6 +104,18 @@ SMBIOS_SERIAL=... SMBIOS_MLB=... SMBIOS_UUID=... SMBIOS_ROM=... ./build-opencore
 
 Your default boot entry is not changed.
 
+## Tuning
+
+While macOS runs in desktop mode, the Linux desktop is stopped, so the VM can take most of the machine:
+
+- **RAM:** leave ~6–8 GB for Linux (it uses the spare as disk cache for the macOS image). On 32 GB: `VM_RAM_MB=24576`.
+- **Cores:** one vCPU per *physical* core, `threads=1`. Giving macOS SMT siblings made audio (Logic Pro)
+  and UI stutter in testing. Leave 2 physical cores for QEMU's own disk/USB work.
+- **CPU pinning** (`VM_PIN_CPUS`, `HOST_CPUS` in `passthrough.conf`): each vCPU gets its own physical core
+  and QEMU's helper threads stay off them. Most useful for real-time audio. See `lscpu -e` for your layout.
+
+The QEMU monitor is on a socket: `sudo socat - UNIX-CONNECT:logs/monitor.sock`.
+
 ## Recovery
 
 - **Black screen after leaving macOS (desktop mode):** SSH in and run `sudo ./emergency-restore.sh`.

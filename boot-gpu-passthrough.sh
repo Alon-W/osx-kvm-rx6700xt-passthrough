@@ -216,8 +216,31 @@ args=(
   -serial "file:$SERIAL_LOG"
   -vga none
   -display none
-  -monitor stdio
+  -monitor "unix:$SCRIPT_DIR/logs/monitor.sock,server,nowait"
 )
+
+# Optional CPU pinning: vCPU i runs only on host CPU PIN[i]; QEMU's other threads
+# (disk, USB, emulation) run on HOST_CPUS. Keeps real-time audio off busy cores.
+PIN=()
+if [ -n "${VM_PIN_CPUS:-}" ]; then
+    read -ra PIN <<< "$VM_PIN_CPUS"
+    [ "${#PIN[@]}" -eq "$VM_CORES" ] || { echo "[ERROR] VM_PIN_CPUS lists ${#PIN[@]} CPUs but VM_CORES=$VM_CORES"; exit 1; }
+    log "CPU pinning: vCPUs -> host CPUs ${PIN[*]}; QEMU threads -> ${HOST_CPUS:-any}"
+fi
+pin_vcpus() {
+    local tries t comm n pinned=0
+    for tries in $(seq 50); do
+        for t in /proc/"$QPID"/task/*; do
+            comm=$(cat "$t/comm" 2>/dev/null) || continue
+            [[ "$comm" =~ ^CPU\ ([0-9]+)/KVM$ ]] || continue
+            n=${BASH_REMATCH[1]}
+            taskset -pc "${PIN[$n]}" "$(basename "$t")" >/dev/null && pinned=$((pinned + 1))
+        done
+        [ "$pinned" -ge "$VM_CORES" ] && { log "Pinned $pinned vCPU threads."; return; }
+        pinned=0; sleep 0.2
+    done
+    log "WARNING: could only pin $pinned of $VM_CORES vCPU threads"
+}
 
 if [ "$DRY_RUN" = "1" ]; then
     echo ""
@@ -238,7 +261,17 @@ command -v qemu-system-x86_64 >/dev/null || { echo "[ERROR] qemu-system-x86_64 n
 
 log "Starting macOS on the physical monitors. Shut macOS down from inside to exit cleanly."
 log "SSH into macOS: ssh <mac-user>@localhost -p 2222"
+log "QEMU monitor: socat - UNIX-CONNECT:$SCRIPT_DIR/logs/monitor.sock"
 QEMU_STARTED=1
-qemu-system-x86_64 "${args[@]}"
+if [ -n "${HOST_CPUS:-}" ]; then
+    taskset -c "$HOST_CPUS" qemu-system-x86_64 "${args[@]}" &
+else
+    qemu-system-x86_64 "${args[@]}" &
+fi
+QPID=$!
+# QEMU runs in the background: stop it first on Ctrl+C / service stop, then clean up
+trap 'kill -TERM "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null; exit 130' INT TERM
+[ "${#PIN[@]}" -gt 0 ] && pin_vcpus
+wait "$QPID"
 log "QEMU exited with code $?."
 exit 0
