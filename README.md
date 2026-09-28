@@ -15,8 +15,9 @@ Most of this took a long time to find. If you're debugging a similar setup, thes
    (common in guides), NootRX panics at boot with `Failed to find a compatible GPU`. With older Lilu
    it silently does nothing instead, and macOS shows a 7 MB framebuffer.
 2. **Lilu 1.7.2 or newer.** With Lilu 1.6.8 on Sequoia, NootRX loaded but never attached.
-3. **No "reset bug" workaround needed at VM level.** Navi 22 has no FLR, but it can be reset: this project
-   does a PCI remove → S3 suspend (`rtcwake -m mem -s 3`) → rescan, which power-cycles the slot.
+3. **A full power-cycle of the card between owners.** Navi 22 has no Function Level Reset, so the GPU
+   can't be cleanly reset in software. A PCI remove → S3 suspend (`rtcwake -m mem -s 3`) → rescan makes
+   the motherboard cut slot power, which resets the card completely.
 4. **Get the guest kernel log out of the VM.** When the screen freezes you can't read anything. A
    `serial=3` boot-arg plus QEMU `-serial file:` writes the full log (Lilu/NootRX debug output
    included) to a file on the host. That's how items 1 and 2 were found. See [Debugging](#debugging).
@@ -40,6 +41,113 @@ Reports welcome.
 | Start | App menu → **macOS (GPU passthrough)** | `sudo ./install-passthrough-boot.sh --next` or pick it in GRUB |
 | What happens | Desktop closes, PC sleeps ~3 s (GPU reset), macOS starts | Linux boots headless, macOS starts automatically |
 | Back to Linux | Shut macOS down → the login screen returns | Reboot |
+
+## How it works
+
+### The pieces
+
+```
+ Linux host                                  macOS guest
+ ─────────────────────────────────────       ───────────────────────────────────────
+ boot-gpu-passthrough.sh                     OpenCore (boot loader, from the .qcow2)
+   │ hands the GPU to vfio-pci                 └─ injects Lilu + NootRX into macOS
+   ▼                                         Lilu      finds the GPU on the PCI tree
+ vfio-pci  (kernel driver that lets          NootRX    teaches Apple's AMD drivers
+   │        a VM own a real PCI device)                  (AMDRadeonX6000*) to accept Navi 22
+   ▼                                         Apple's AMD drivers → Metal acceleration
+ QEMU/KVM  ── real RX 6700 XT ──────────────▶ on your physical monitors
+```
+
+Only one side can use the GPU at a time. Everything below is about moving the card cleanly from
+Linux to macOS and back.
+
+### Desktop mode, step by step
+
+Started from the menu entry: `pkexec systemd-run … boot-gpu-passthrough.sh`. Running it as a
+system service matters. The launcher shuts down your desktop session, and anything started *inside*
+that session would be killed with it.
+
+**Handing the GPU to macOS:**
+
+1. **Stop the display manager** (`display-manager.service`). This closes the desktop and every app
+   using the GPU. `fuser -k /dev/dri/*` kills anything that still holds it.
+2. **Release the console.** Unbind the text consoles and the EFI framebuffer, so Linux stops drawing
+   on the card at all.
+3. **Remove the GPU from the PCI bus** (`echo 1 > /sys/bus/pci/devices/<gpu>/remove`), for both the
+   video and HDMI-audio functions. Then unload `amdgpu` and `snd_hda_intel`, so they can't grab
+   the card again.
+4. **Pre-register the card with vfio-pci** (`new_id`). Whenever the card shows up again, vfio-pci
+   claims it instead of amdgpu.
+5. **Power-cycle the card:** a 3-second S3 sleep (`rtcwake -m mem -s 3`). The motherboard cuts
+   power to the PCIe slot, so the card forgets everything amdgpu did to it. It's the only reliable
+   reset for a card without FLR. Your PC visibly sleeps and wakes here.
+6. **Rescan the PCI bus.** The card reappears in a fresh state and vfio-pci takes it. The script
+   checks this, and falls back to `driver_override` if the auto-claim missed.
+7. **Start QEMU** (see [the VM](#the-vm) below), pin its CPU threads if configured, and wait
+   until macOS shuts down.
+
+**Handing it back to Linux** (a shell `EXIT` trap, so it also runs after a crash or kill):
+
+1. **Re-plug the passed-through USB devices** in software (`authorized` 0 → 1). A QEMU that was
+   killed never returns them itself, which would leave your keyboard and mouse dead.
+2. **Release the card from vfio-pci:** unbind it, clear `driver_override`, and **`remove_id`**. If
+   the IDs stay registered, vfio-pci grabs the card again on the next rescan and the desktop never
+   comes back.
+3. **Remove, S3 power-cycle, rescan** again. macOS initialized the card, and amdgpu needs it fresh.
+4. **Reload `amdgpu` and `snd_hda_intel`.** The latter also drives the motherboard audio, which
+   was unloaded in step 3 above.
+5. **Rebind the consoles and restart the display manager.** The login screen appears.
+
+### Dedicated boot mode
+
+Instead of taking the card away from a running desktop, Linux never touches it:
+
+- The GRUB entry adds `vfio_pci.ids=1002:73df,1002:ab28`, so vfio-pci claims the card at boot,
+  before amdgpu loads. `rd.driver.pre=vfio_pci` loads vfio-pci early from the initramfs, and
+  `initcall_blacklist=sysfb_init video=efifb:off` stops Linux from using the card as a boot
+  console. Also: `amd_iommu=on iommu=pt`.
+- The entry comes from a generator script in `/etc/grub.d/`, not a normal boot entry. On Fedora,
+  every kernel update regenerates the GRUB config and rewrites the arguments of all normal (BLS)
+  entries, which silently removed the vfio arguments. The generator writes the entry fresh each
+  time, always with the newest kernel.
+- `macos-passthrough-boot.service` runs at every boot. If `/proc/cmdline` contains `vfio_pci.ids=`,
+  it starts the launcher, which detects "isolated" mode and skips all the teardown and reset steps.
+  On a normal boot it does nothing.
+- When macOS shuts down, the card stays with vfio-pci. Reboot into the normal entry for Linux.
+
+### The VM
+
+```
+ pcie.0 (QEMU root bus)
+ ├── 00:02.0  pcie-root-port ──┬── 00.0  RX 6700 XT        (vfio-pci, multifunction)
+ │                             └── 00.1  HDMI/DP audio      (vfio-pci)
+ ├── 00:04.0  qemu-xhci  ── your USB keyboard/mouse (usb-host, by vendor:product)
+ ├── 00:05.0  virtio-net ── user networking, host port 2222 → macOS SSH
+ └── ich9-ahci ── OpenCore image (snapshot=on, never modified) + macOS disk
+```
+
+- **The root port is the important part.** On a real Mac, the GPU sits behind a PCIe bridge, and
+  Lilu's device detection only looks there. A GPU plugged directly into `pcie.0` is invisible to it.
+- **Firmware:** OVMF (UEFI) runs the card's own GOP driver, so you see the OpenCore picker on the
+  real monitor before macOS loads. No VBIOS file is needed (`ROM_FILE=` exists as an option).
+- **No virtual display** (`-vga none -display none`). The only output is the physical card.
+- **The serial port is logged** to `logs/serial-*.log`. With the `serial=3` boot-arg, macOS writes
+  its kernel log there.
+- **CPU:** `-cpu Haswell-noTSX,…` as in OSX-KVM, with one thread per core. With pinning on, QEMU
+  runs with `-name …,debug-threads=on`, so its vCPU threads are named `CPU 0/KVM` … `CPU 5/KVM`.
+  The launcher `taskset`s each to its host CPU and moves QEMU's other threads to `HOST_CPUS`. If
+  it can't find every vCPU thread, it changes nothing rather than squeezing the VM.
+
+### Inside macOS
+
+1. **OpenCore** boots from its own disk image and injects kexts (kernel extensions) into macOS
+   before it starts: **Lilu**, a patching framework, and **NootRX**, a Lilu plugin.
+2. **Lilu** scans the PCI tree for GPUs, which is why the root port matters.
+3. **NootRX** finds device `0x73DF` (Navi 22). macOS has AMD drivers for Navi 21 and 23 but not 22.
+   NootRX patches Apple's `AMDRadeonX6000`, `AMDRadeonX6000Framebuffer`, `AMDRadeonX6000HWServices`
+   and `AMDRadeonX6810HWLibs` in memory so they accept the card and load its firmware.
+4. Apple's own drivers then run the card: full framebuffer, multiple displays and Metal.
+   **WhateverGreen** is disabled because it conflicts with NootRX.
 
 ## Requirements
 
@@ -86,9 +194,10 @@ USB_DEVICES=("05ac:024f" "046d:c547")   # the ID column: vendor:product
 - Wireless dongles (Logitech, etc.) are passed as the receiver's ID; everything paired to it goes along.
 - With two identical devices (same ID), only one is passed through.
 
-`build-opencore-image.sh` takes OSX-KVM's stock `OpenCore/OpenCore.qcow2`, swaps in Lilu 1.7.2, adds
-NootRX, disables WhateverGreen, sets the boot-args, and writes `OpenCore/OpenCore-nootrx.qcow2`.
-It uses placeholder serials. For iCloud/iMessage, generate your own with
+`build-opencore-image.sh` takes OSX-KVM's stock `OpenCore/OpenCore.qcow2`, replaces its config with the
+verified `opencore/config.plist`, swaps in Lilu 1.7.2, adds NootRX, disables WhateverGreen, sets the
+boot-args, and writes `OpenCore/OpenCore-nootrx.qcow2`. (OSX-KVM's stock config hung at the Apple logo
+with NootRX, which is why the verified config is used.) It uses placeholder serials. For iCloud/iMessage, generate your own with
 [GenSMBIOS](https://github.com/corpnewt/GenSMBIOS) and pass them in (never commit them):
 
 ```bash
