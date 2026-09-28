@@ -38,6 +38,27 @@ run() {
 vfio_id() { echo "${1/:/ }"; }   # "1002:73df" -> "1002 73df" (sysfs new_id/remove_id format)
 # Software re-plug of passed-through USB devices. A killed QEMU never hands them
 # back to their Linux drivers, leaving keyboard/mouse dead on the desktop.
+# amd-pstate energy/performance preference for the pinned cores while the VM runs;
+# the previous values are restored on exit.
+declare -A SAVED_EPP=()
+set_epp() {
+    local cpu f
+    for cpu in "${PIN[@]}"; do
+        f=/sys/devices/system/cpu/cpu$cpu/cpufreq/energy_performance_preference
+        [ -w "$f" ] || continue
+        SAVED_EPP[$cpu]=$(cat "$f")
+        echo "$VM_CPU_EPP" > "$f" 2>/dev/null || log "WARNING: could not set EPP on CPU $cpu"
+    done
+    [ "${#SAVED_EPP[@]}" -gt 0 ] && log "CPU energy preference '$VM_CPU_EPP' on CPUs ${!SAVED_EPP[*]}"
+}
+restore_epp() {
+    local cpu
+    for cpu in "${!SAVED_EPP[@]}"; do
+        echo "${SAVED_EPP[$cpu]}" > /sys/devices/system/cpu/cpu$cpu/cpufreq/energy_performance_preference 2>/dev/null
+    done
+    [ "${#SAVED_EPP[@]}" -gt 0 ] && log "CPU energy preference restored"
+    SAVED_EPP=()
+}
 usb_reattach() {
     local id d
     for id in "${USB_DEVICES[@]}"; do
@@ -66,6 +87,7 @@ cleanup() {
     echo ""
     [ "$DRY_RUN" = "1" ] && return
     [ -n "${QEMU_STARTED:-}" ] && run "Re-plugging USB devices..." usb_reattach
+    restore_epp
     if [ "$MODE" = "isolated" ]; then
         log "Isolated mode: GPU stays on vfio-pci. Relaunch, or reboot into the normal entry."
         return
@@ -285,6 +307,7 @@ QPID=$!
 # QEMU runs in the background: stop it first on Ctrl+C / service stop, then clean up
 trap 'kill -TERM "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null; exit 130' INT TERM
 [ "${#PIN[@]}" -gt 0 ] && pin_vcpus
+[ "${#PIN[@]}" -gt 0 ] && [ -n "${VM_CPU_EPP:-}" ] && set_epp
 wait "$QPID"
 log "QEMU exited with code $?."
 exit 0

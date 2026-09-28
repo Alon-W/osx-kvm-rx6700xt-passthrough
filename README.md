@@ -222,6 +222,10 @@ While macOS runs in desktop mode, the Linux desktop is stopped, so the VM can ta
   and UI stutter in testing. Leave 2 physical cores for QEMU's own disk/USB work.
 - **CPU pinning** (`VM_PIN_CPUS`, `HOST_CPUS` in `passthrough.conf`): each vCPU gets its own physical core
   and QEMU's helper threads stay off them. Most useful for real-time audio. See `lscpu -e` for your layout.
+- **AMD CPU energy preference** (`VM_CPU_EPP="performance"`, needs pinning and the `amd-pstate-epp`
+  driver): the pinned cores respond at full clock speed instead of ramping up from idle, which helps
+  audio under load. Idle cores still sleep, so the extra power is small. The previous setting is
+  restored when the VM exits.
 
 The QEMU monitor is on a socket: `sudo socat - UNIX-CONNECT:logs/monitor.sock`.
 
