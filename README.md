@@ -210,7 +210,7 @@ SMBIOS_SERIAL=... SMBIOS_MLB=... SMBIOS_UUID=... SMBIOS_ROM=... ./build-opencore
 - module ordering in `/etc/modprobe.d/`
 - a **root-owned copy** of the launcher scripts and `passthrough.conf` in `/usr/local/lib/macos-passthrough/`
 - `/usr/local/bin/macos-passthrough-start` plus a polkit rule, so the menu entry starts macOS
-  **without a password**, for your user only, in an active local session, and only that one command
+  **without a password**, for your user only and only that one command (it can start the VM, nothing else)
 - the autostart service for the dedicated boot entry
 - the desktop menu entry
 

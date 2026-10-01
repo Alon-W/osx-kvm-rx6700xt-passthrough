@@ -72,7 +72,8 @@ write "$SYS_DIR/passthrough.conf" "$(grep -v '^OSX_KVM_DIR=' "$INSTALL_DIR/passt
 run "Locking down passthrough.conf" sh -c "chown root:root '$SYS_DIR/passthrough.conf' && chmod 0644 '$SYS_DIR/passthrough.conf'"
 
 # 4. Password-free start from the menu: one fixed, root-owned command, allowed by polkit
-#    only for this user, only in an active local session.
+#    for this user only. (No session check: Plasma 6 launches menu apps via systemd --user,
+#    which is outside the login session, so subject.active would always be false.)
 write /usr/local/bin/macos-passthrough-start "#!/bin/sh
 # Installed by install-passthrough-boot.sh. Starts the VM as a system service.
 exec /usr/bin/systemd-run --unit=macos-vm --collect /usr/bin/bash $SYS_DIR/boot-gpu-passthrough.sh"
@@ -81,7 +82,7 @@ write /etc/polkit-1/rules.d/49-macos-passthrough.rules "// Installed by install-
 polkit.addRule(function(action, subject) {
     if (action.id == \"org.freedesktop.policykit.exec\" &&
         action.lookup(\"program\") == \"/usr/local/bin/macos-passthrough-start\" &&
-        subject.user == \"$DESK_USER\" && subject.local && subject.active) {
+        subject.user == \"$DESK_USER\") {
         return polkit.Result.YES;
     }
 });"
