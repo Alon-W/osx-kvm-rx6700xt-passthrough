@@ -2,7 +2,7 @@
 Type=Application
 Name=macOS (GPU passthrough)
 Comment=Closes the desktop session, runs macOS on the GPU; the desktop returns when macOS shuts down. Save your work first.
-Exec=pkexec /usr/bin/systemd-run --unit=macos-vm --collect /usr/bin/bash @INSTALL_DIR@/boot-gpu-passthrough.sh
+Exec=pkexec /usr/local/bin/macos-passthrough-start
 Icon=computer
 Terminal=false
 Categories=System;

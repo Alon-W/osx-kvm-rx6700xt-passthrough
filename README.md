@@ -208,10 +208,17 @@ SMBIOS_SERIAL=... SMBIOS_MLB=... SMBIOS_UUID=... SMBIOS_ROM=... ./build-opencore
 - a GRUB entry generator in `/etc/grub.d/`. It rebuilds the entry with your newest kernel on every
   kernel update, so the vfio args survive (plain BLS entries lose custom args).
 - module ordering in `/etc/modprobe.d/`
+- a **root-owned copy** of the launcher scripts and `passthrough.conf` in `/usr/local/lib/macos-passthrough/`
+- `/usr/local/bin/macos-passthrough-start` plus a polkit rule, so the menu entry starts macOS
+  **without a password**, for your user only, in an active local session, and only that one command
 - the autostart service for the dedicated boot entry
 - the desktop menu entry
 
 Your default boot entry is not changed.
+
+**After editing `passthrough.conf`, rerun `sudo ./install-passthrough-boot.sh`.** Whatever runs as root
+without a password must not be editable by your normal account. Otherwise any program running as you
+could rewrite it and gain root, so the menu entry runs the root-owned copy, not the files in your folder.
 
 ## Tuning
 

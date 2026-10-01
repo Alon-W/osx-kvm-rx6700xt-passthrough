@@ -2,12 +2,12 @@
 Description=macOS GPU passthrough VM autostart (passthrough boot entry only)
 After=network-online.target sshd.service
 Wants=network-online.target sshd.service
-ConditionPathExists=@INSTALL_DIR@/boot-gpu-passthrough.sh
+ConditionPathExists=@SYS_DIR@/boot-gpu-passthrough.sh
 
 [Service]
 Type=simple
 # Run through bash: SELinux may label files under /home as non-executable for systemd
-ExecStart=/usr/bin/bash @INSTALL_DIR@/passthrough-autostart.sh
+ExecStart=/usr/bin/bash @SYS_DIR@/passthrough-autostart.sh
 Restart=no
 TimeoutStartSec=infinity
 

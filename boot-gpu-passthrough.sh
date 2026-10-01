@@ -24,9 +24,12 @@ if [ "$EUID" -ne 0 ] && [ "$DRY_RUN" = "0" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 # shellcheck source=passthrough.conf
 . "$SCRIPT_DIR/passthrough.conf"
+# Disk images, OVMF and logs live in the OSX-KVM folder. When installed to the root-owned
+# /usr/local/lib/macos-passthrough, the installer sets OSX_KVM_DIR to point back there.
+DATA_DIR="${OSX_KVM_DIR:-$SCRIPT_DIR}"
+cd "$DATA_DIR"
 
 log() { echo "[gpu-passthrough] $*"; }
 run() {
@@ -176,7 +179,7 @@ fi
 if [ -n "${OC_IMAGE:-}" ]; then
     [ -f "$OC_IMAGE" ] || { echo "[ERROR] OC_IMAGE not found: $OC_IMAGE"; exit 1; }
 else
-    OC_IMAGE="$SCRIPT_DIR/$OC_IMAGE_DEFAULT"
+    OC_IMAGE="$DATA_DIR/$OC_IMAGE_DEFAULT"
 fi
 log "OpenCore image: $OC_IMAGE"
 
@@ -187,8 +190,8 @@ if [ -n "${ROM_FILE:-}" ]; then
     log "Using VBIOS ROM file: $ROM_FILE"
 fi
 
-mkdir -p "$SCRIPT_DIR/logs"
-SERIAL_LOG="$SCRIPT_DIR/logs/serial-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "$DATA_DIR/logs"
+SERIAL_LOG="$DATA_DIR/logs/serial-$(date +%Y%m%d-%H%M%S).log"
 log "Guest serial log: $SERIAL_LOG  (fills when macOS boots with serial=3)"
 
 # Lilu (and so NootRX) only detects a discrete GPU behind a PCIe bridge, as on
@@ -223,8 +226,8 @@ args=(
   -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
   -device isa-applesmc,osk="ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
   -smbios type=2
-  -drive if=pflash,format=raw,readonly=on,file="$SCRIPT_DIR/OVMF_CODE_4M.fd"
-  -drive if=pflash,format=raw,file="$SCRIPT_DIR/OVMF_VARS-1920x1080.fd"
+  -drive if=pflash,format=raw,readonly=on,file="$DATA_DIR/OVMF_CODE_4M.fd"
+  -drive if=pflash,format=raw,file="$DATA_DIR/OVMF_VARS-1920x1080.fd"
   "${GPU_ARGS[@]}"
   -device qemu-xhci,id=xhci,bus=pcie.0,addr=0x4
   "${USB_ARGS[@]}"
@@ -232,14 +235,14 @@ args=(
   -device ich9-ahci,id=sata
   -drive id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,cache=writeback,aio=threads,file="$OC_IMAGE"
   -device ide-hd,bus=sata.2,drive=OpenCoreBoot
-  -drive id=MacHDD,if=none,file="$SCRIPT_DIR/$MAC_DISK",format=qcow2,cache=writeback,aio=threads,discard=unmap
+  -drive id=MacHDD,if=none,file="$DATA_DIR/$MAC_DISK",format=qcow2,cache=writeback,aio=threads,discard=unmap
   -device ide-hd,bus=sata.4,drive=MacHDD
   -netdev user,id=net0,hostfwd=tcp::2222-:22
   -device virtio-net-pci,netdev=net0,id=net0,mac="$VM_MAC",bus=pcie.0,addr=0x5
   -serial "file:$SERIAL_LOG"
   -vga none
   -display none
-  -monitor "unix:$SCRIPT_DIR/logs/monitor.sock,server,nowait"
+  -monitor "unix:$DATA_DIR/logs/monitor.sock,server,nowait"
 )
 
 # Optional CPU pinning: vCPU i runs only on host CPU PIN[i]; QEMU's other threads
@@ -296,11 +299,11 @@ if [ "$AVAILABLE_MB" -lt "$((VM_RAM_MB + HOST_RESERVE_MB))" ]; then
 fi
 command -v qemu-system-x86_64 >/dev/null || { echo "[ERROR] qemu-system-x86_64 not found"; exit 1; }
 [ -f "$OC_IMAGE" ] || { echo "[ERROR] OpenCore image missing: $OC_IMAGE (run build-opencore-image.sh)"; exit 1; }
-[ -f "$SCRIPT_DIR/$MAC_DISK" ] || { echo "[ERROR] macOS disk missing: $MAC_DISK"; exit 1; }
+[ -f "$DATA_DIR/$MAC_DISK" ] || { echo "[ERROR] macOS disk missing: $MAC_DISK"; exit 1; }
 
 log "Starting macOS on the physical monitors. Shut macOS down from inside to exit cleanly."
 log "SSH into macOS: ssh <mac-user>@localhost -p 2222"
-log "QEMU monitor: socat - UNIX-CONNECT:$SCRIPT_DIR/logs/monitor.sock"
+log "QEMU monitor: socat - UNIX-CONNECT:$DATA_DIR/logs/monitor.sock"
 QEMU_STARTED=1
 qemu-system-x86_64 "${args[@]}" &
 QPID=$!
