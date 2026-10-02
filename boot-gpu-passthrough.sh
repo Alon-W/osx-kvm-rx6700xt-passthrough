@@ -260,7 +260,8 @@ if [ -n "${USB_CONTROLLERS:-}" ]; then
     fi
     i=0
     for c in "${LIST[@]}"; do
-        USB_CTRL_ARGS+=(-device "pcie-root-port,id=usbport$i,bus=pcie.0,chassis=$((i + 10)),slot=$((i + 10))"
+        # Fixed slots 0x10+: auto-placement can take slot 5, which virtio-net is pinned to
+        USB_CTRL_ARGS+=(-device "pcie-root-port,id=usbport$i,bus=pcie.0,addr=$(printf '0x%x' $((0x10 + i))),chassis=$((i + 10)),slot=$((i + 10))"
                         -device "vfio-pci,host=$c,bus=usbport$i")
         i=$((i + 1))
     done
