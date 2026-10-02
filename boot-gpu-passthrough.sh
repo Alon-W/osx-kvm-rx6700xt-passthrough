@@ -74,6 +74,36 @@ s3_reset() {
     done
     return 1
 }
+# Whole USB controllers for macOS (USB_CONTROLLERS): macOS drives them natively, which
+# isochronous devices like USB headsets need. Linux gets them back on exit.
+USB_CTRL_TAKEN=()
+take_usb_controllers() {
+    local c
+    for c in ${USB_CONTROLLERS:-}; do
+        [ -e "/sys/bus/pci/devices/$c" ] || { log "WARNING: USB controller $c not found, skipping"; continue; }
+        [ -e "/sys/bus/pci/devices/$c/driver" ] && echo "$c" > "/sys/bus/pci/devices/$c/driver/unbind"
+        echo vfio-pci > "/sys/bus/pci/devices/$c/driver_override"
+        echo "$c" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+        if [ "$(basename "$(readlink "/sys/bus/pci/devices/$c/driver" 2>/dev/null)")" = "vfio-pci" ]; then
+            USB_CTRL_TAKEN+=("$c")
+        else
+            log "WARNING: could not hand USB controller $c to vfio-pci; giving it back"
+            echo "" > "/sys/bus/pci/devices/$c/driver_override"
+            echo "$c" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+        fi
+    done
+    [ "${#USB_CTRL_TAKEN[@]}" -gt 0 ] && log "USB controllers for macOS: ${USB_CTRL_TAKEN[*]}"
+}
+return_usb_controllers() {
+    local c
+    for c in "${USB_CTRL_TAKEN[@]}"; do
+        [ -e "/sys/bus/pci/drivers/vfio-pci/$c" ] && echo "$c" > /sys/bus/pci/drivers/vfio-pci/unbind
+        echo "" > "/sys/bus/pci/devices/$c/driver_override" 2>/dev/null
+        echo "$c" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+    done
+    [ "${#USB_CTRL_TAKEN[@]}" -gt 0 ] && log "USB controllers returned to Linux: ${USB_CTRL_TAKEN[*]}"
+    USB_CTRL_TAKEN=()
+}
 usb_reattach() {
     local id d
     for id in "${USB_DEVICES[@]}"; do
@@ -101,6 +131,7 @@ echo "================================================================"
 cleanup() {
     echo ""
     [ "$DRY_RUN" = "1" ] && return
+    return_usb_controllers
     [ -n "${QEMU_STARTED:-}" ] && run "Re-plugging USB devices..." usb_reattach
     restore_epp
     if [ "$MODE" = "isolated" ]; then
@@ -218,6 +249,23 @@ GPU_ARGS=(
   -device "vfio-pci,host=$GPU_AUDIO,bus=gpuport,addr=0x0.1"
 )
 
+USB_CTRL_ARGS=()
+if [ -n "${USB_CONTROLLERS:-}" ]; then
+    if [ "$DRY_RUN" = "0" ]; then
+        take_usb_controllers
+        LIST=("${USB_CTRL_TAKEN[@]}")
+    else
+        read -ra LIST <<< "$USB_CONTROLLERS"
+        log "DRY-RUN: would hand USB controllers to macOS: ${LIST[*]}"
+    fi
+    i=0
+    for c in "${LIST[@]}"; do
+        USB_CTRL_ARGS+=(-device "pcie-root-port,id=usbport$i,bus=pcie.0,chassis=$((i + 10)),slot=$((i + 10))"
+                        -device "vfio-pci,host=$c,bus=usbport$i")
+        i=$((i + 1))
+    done
+fi
+
 # Only pass USB devices that are plugged in; QEMU aborts on missing ones
 USB_ARGS=()
 for id in "${USB_DEVICES[@]}"; do
@@ -249,6 +297,7 @@ args=(
   "${GPU_ARGS[@]}"
   -device qemu-xhci,id=xhci,bus=pcie.0,addr=0x4
   "${USB_ARGS[@]}"
+  "${USB_CTRL_ARGS[@]}"
   -audiodev none,id=noaudio
   -device ich9-ahci,id=sata
   -drive id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,cache=writeback,aio=threads,file="$OC_IMAGE"

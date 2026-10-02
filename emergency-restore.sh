@@ -21,6 +21,13 @@ for id in "${USB_DEVICES[@]}"; do
     done
 done
 
+# Give passed-through USB controllers back to Linux (no-op if the launcher already did)
+for c in ${USB_CONTROLLERS:-}; do
+    [ -e "/sys/bus/pci/drivers/vfio-pci/$c" ] && echo "$c" > /sys/bus/pci/drivers/vfio-pci/unbind
+    echo "" > "/sys/bus/pci/devices/$c/driver_override" 2>/dev/null || true
+    echo "$c" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+done
+
 if grep -q 'vfio_pci.ids=' /proc/cmdline; then
     echo "Isolated boot: GPU stays on vfio-pci. Relaunch the VM, or reboot into the normal entry."
     exit 0
