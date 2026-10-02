@@ -101,7 +101,9 @@ run "Setting owner of menu entry" chown "$DESK_USER:" "$DESK_FILE"
 
 # 7. vfio_pci must be in the initramfs for rd.driver.pre=vfio_pci
 if command -v lsinitrd >/dev/null && [ "$DRY_RUN" = "0" ]; then
-    if ! lsinitrd 2>/dev/null | grep -q 'vfio-pci\.ko'; then
+    # Capture first: with pipefail, `lsinitrd | grep -q` fails when grep exits early (SIGPIPE)
+    INITRD_LIST=$(lsinitrd 2>/dev/null || true)
+    if ! grep -q 'vfio-pci\.ko' <<< "$INITRD_LIST"; then
         write /etc/dracut.conf.d/vfio-macos-gpu.conf 'force_drivers+=" vfio_pci vfio vfio_iommu_type1 "'
         log "vfio_pci is not in your initramfs yet. Run:  sudo dracut -f --regenerate-all"
     fi
