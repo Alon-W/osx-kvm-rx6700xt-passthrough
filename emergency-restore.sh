@@ -44,7 +44,7 @@ vfio_id "$GPU_AUDIO_ID" > /sys/bus/pci/drivers/vfio-pci/remove_id 2>/dev/null ||
 echo 1 > "/sys/bus/pci/devices/$GPU_VGA/remove" 2>/dev/null || true
 echo 1 > "/sys/bus/pci/devices/$GPU_AUDIO/remove" 2>/dev/null || true
 sleep 1
-rtcwake -m mem -s 3
+for i in 1 2 3 4; do rtcwake -m mem -s 3 && break; echo "S3 sleep refused (attempt $i/4), retrying..."; sleep 5; done
 echo 1 > /sys/bus/pci/rescan
 sleep 2
 

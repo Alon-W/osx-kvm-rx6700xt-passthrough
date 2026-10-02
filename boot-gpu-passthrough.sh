@@ -62,6 +62,18 @@ restore_epp() {
     [ "${#SAVED_EPP[@]}" -gt 0 ] && log "CPU energy preference restored"
     SAVED_EPP=()
 }
+# Power-cycle the GPU with a 3 s S3 sleep. The kernel refuses to suspend while a process
+# won't freeze (common right after the PC wakes from sleep), so retry, and report failure:
+# starting macOS on a card that wasn't reset gives a black screen.
+s3_reset() {
+    local i
+    for i in 1 2 3 4; do
+        rtcwake -m mem -s 3 && return 0
+        log "S3 sleep refused (attempt $i/4), retrying in 5 s..."
+        sleep 5
+    done
+    return 1
+}
 usb_reattach() {
     local id d
     for id in "${USB_DEVICES[@]}"; do
@@ -106,7 +118,7 @@ cleanup() {
     vfio_id "$GPU_AUDIO_ID" > /sys/bus/pci/drivers/vfio-pci/remove_id 2>/dev/null || true
     run "Removing GPU from PCI bus..." \
         sh -c "echo 1 > '/sys/bus/pci/devices/$GPU_VGA/remove' 2>/dev/null; echo 1 > '/sys/bus/pci/devices/$GPU_AUDIO/remove' 2>/dev/null; true"
-    run "S3 suspend to power-reset the GPU..." rtcwake -m mem -s 3
+    run "S3 suspend to power-reset the GPU..." s3_reset
     run "Rescanning PCI bus..." sh -c "echo 1 > /sys/bus/pci/rescan; sleep 2; true"
     run "Reloading amdgpu + HDA audio..." sh -c "modprobe amdgpu; modprobe snd_hda_intel; true"
     run "Rebinding VT consoles..." sh -c 'for v in /sys/class/vtconsole/vtcon*/bind; do echo 1 > "$v" 2>/dev/null || true; done'
@@ -145,7 +157,11 @@ if [ "$MODE" = "runtime" ] && [ "$DRY_RUN" = "0" ]; then
     vfio_id "$GPU_AUDIO_ID" > /sys/bus/pci/drivers/vfio-pci/new_id 2>/dev/null || true
 
     log "S3 suspend: the motherboard cuts PCIe power, resetting the GPU..."
-    rtcwake -m mem -s 3
+    if ! s3_reset; then
+        echo "[ERROR] The GPU reset sleep failed 4 times; not starting macOS on an unreset card."
+        echo "        Restoring the desktop. Try again in a minute."
+        exit 1
+    fi
 
     log "Rescanning PCI bus..."
     echo 1 > /sys/bus/pci/rescan
