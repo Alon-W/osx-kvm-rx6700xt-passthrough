@@ -222,7 +222,9 @@ GPU_ARGS=(
 USB_ARGS=()
 for id in "${USB_DEVICES[@]}"; do
     if lsusb | grep -qi "ID $id "; then
-        USB_ARGS+=(-device "usb-host,vendorid=0x${id%%:*},productid=0x${id##*:},bus=xhci.0")
+        # isobufs: QEMU keeps only 4 isochronous buffers in flight by default, which starves
+        # USB audio devices (macOS logs "Input Fell Behind" and mutes the stream). No effect on HID.
+        USB_ARGS+=(-device "usb-host,vendorid=0x${id%%:*},productid=0x${id##*:},bus=xhci.0,isobufs=32")
         log "USB passthrough: $id"
     fi
 done
