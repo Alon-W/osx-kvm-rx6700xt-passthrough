@@ -291,6 +291,8 @@ args=(
   -smp "$VM_CORES,cores=$VM_CORES,threads=1,sockets=1"
   -global nec-usb-xhci.msi=off
   -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off
+  -global ICH9-LPC.disable_s3=1
+  -global ICH9-LPC.disable_s4=1
   -device isa-applesmc,osk="ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
   -smbios type=2
   -drive if=pflash,format=raw,readonly=on,file="$DATA_DIR/OVMF_CODE_4M.fd"
