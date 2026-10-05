@@ -21,6 +21,12 @@ Most of this took a long time to find. If you're debugging a similar setup, thes
 4. **Get the guest kernel log out of the VM.** When the screen freezes you can't read anything. A
    `serial=3` boot-arg plus QEMU `-serial file:` writes the full log (Lilu/NootRX debug output
    included) to a file on the host. That's how items 1 and 2 were found. See [Debugging](#debugging).
+5. **USB audio needs a whole USB controller.** Forwarding a USB headset as a single device
+   (`usb-host`) gave choppy, robotic sound, even with extra isochronous buffers. Passing the whole
+   xHCI controller with vfio-pci (behind its own root port, like the GPU) gives native audio.
+   See [USB audio](#usb-audio-headsets-interfaces).
+6. **Block guest sleep.** When macOS sleeps in the VM, waking it resets the VM, and the
+   passed-through GPU stays black. The launcher disables S3/S4 in the VM; display sleep still works.
 
 Most of this (the root port, the GRUB entry and the desktop handoff) applies to any AMD GPU.
 NootRX and the Lilu version only matter for Navi 22: the RX 6600/6800/6900 have native macOS drivers.
@@ -83,13 +89,16 @@ that session would be killed with it.
    reset for a card without FLR. Your PC visibly sleeps and wakes here.
 6. **Rescan the PCI bus.** The card reappears in a fresh state and vfio-pci takes it. The script
    checks this, and falls back to `driver_override` if the auto-claim missed.
-7. **Start QEMU** (see [the VM](#the-vm) below), pin its CPU threads if configured, and wait
+7. **Hand over USB controllers** listed in `USB_CONTROLLERS` (if any): unbind each from
+   `xhci_hcd` and bind it to vfio-pci with `driver_override`.
+8. **Start QEMU** (see [the VM](#the-vm) below), pin its CPU threads if configured, and wait
    until macOS shuts down.
 
 **Handing it back to Linux** (a shell `EXIT` trap, so it also runs after a crash or kill):
 
-1. **Re-plug the passed-through USB devices** in software (`authorized` 0 → 1). A QEMU that was
-   killed never returns them itself, which would leave your keyboard and mouse dead.
+1. **Return the USB controllers** to `xhci_hcd`, then **re-plug the passed-through USB devices**
+   in software (`authorized` 0 → 1). A QEMU that was killed never returns them itself, which would
+   leave your keyboard and mouse dead.
 2. **Release the card from vfio-pci:** unbind it, clear `driver_override`, and **`remove_id`**. If
    the IDs stay registered, vfio-pci grabs the card again on the next rescan and the desktop never
    comes back.
@@ -123,6 +132,7 @@ Instead of taking the card away from a running desktop, Linux never touches it:
  │                             └── 00.1  HDMI/DP audio      (vfio-pci)
  ├── 00:04.0  qemu-xhci  ── your USB keyboard/mouse (usb-host, by vendor:product)
  ├── 00:05.0  virtio-net ── user networking, host port 2222 → macOS SSH
+ ├── 00:10.0+ pcie-root-port ── one per USB_CONTROLLERS entry (vfio-pci, whole xHCI controller)
  └── ich9-ahci ── OpenCore image (snapshot=on, never modified) + macOS disk
 ```
 
@@ -131,6 +141,9 @@ Instead of taking the card away from a running desktop, Linux never touches it:
 - **Firmware:** OVMF (UEFI) runs the card's own GOP driver, so you see the OpenCore picker on the
   real monitor before macOS loads. No VBIOS file is needed (`ROM_FILE=` exists as an option).
 - **No virtual display** (`-vga none -display none`). The only output is the physical card.
+- **No guest sleep** (`ICH9-LPC.disable_s3=1`, `disable_s4=1`). A sleeping macOS VM wakes through
+  a VM reset, and a card without FLR can't come back from that without a host power-cycle. macOS
+  still turns the display off when idle.
 - **The serial port is logged** to `logs/serial-*.log`. With the `serial=3` boot-arg, macOS writes
   its kernel log there.
 - **CPU:** `-cpu Haswell-noTSX,…` as in OSX-KVM, with one thread per core. With pinning on, QEMU
@@ -193,6 +206,30 @@ USB_DEVICES=("05ac:024f" "046d:c547")   # the ID column: vendor:product
   the launcher re-plugs them in software so Linux gets them back.
 - Wireless dongles (Logitech, etc.) are passed as the receiver's ID; everything paired to it goes along.
 - With two identical devices (same ID), only one is passed through.
+
+### USB audio (headsets, interfaces)
+
+Single-device forwarding is fine for keyboards and mice, but USB audio through it is choppy.
+For a headset or audio interface, pass the **whole USB controller** it's plugged into:
+
+```bash
+lspci -D | grep USB                                           # find the controllers
+for b in /sys/bus/usb/devices/usb*; do echo "$(basename $b) -> $(basename $(readlink -f $b/..))"; done   # bus -> controller
+lsusb                                                         # which device is on which bus
+ls /sys/bus/pci/devices/0000:0d:00.3/iommu_group/devices/    # check its IOMMU group
+```
+
+```bash
+USB_CONTROLLERS="0000:0d:00.3"     # space-separated PCI addresses
+```
+
+- **Everything on that controller goes to macOS** while it runs: every port, plus internal devices
+  wired to it (Bluetooth, RGB controllers, front-panel hubs). Plug the devices you want in macOS
+  into its ports. Linux keeps the rest.
+- The controller must be alone in its IOMMU group, or share it only with PCIe bridges and devices
+  that have no driver. Don't pass the controller your Linux boot disk or network depends on.
+- Devices on a passed controller don't need to be in `USB_DEVICES`. They show up in macOS natively.
+- When the VM exits, the controllers go back to `xhci_hcd` and their devices reappear in Linux.
 
 `build-opencore-image.sh` takes OSX-KVM's stock `OpenCore/OpenCore.qcow2`, replaces its config with the
 verified `opencore/config.plist`, swaps in Lilu 1.7.2, adds NootRX, disables WhateverGreen, sets the
